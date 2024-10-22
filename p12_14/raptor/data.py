@@ -72,9 +72,7 @@ def get_documents():
         chunk_size=chunk_size_tok, chunk_overlap=0
     )
     texts_split = text_splitter.split_text(concatenated_content)
+    print("========docs info====len-max=====")
+    print(len(texts_split), max([len(i) for i in texts_split]))
     return texts_split
 
-x = get_documents()
-print(len(x))
-max_len = max([len(i) for i in x])
-print(max_len)

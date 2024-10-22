@@ -3,13 +3,24 @@
 # @Author  : HeJwei
 # @FileName: tree_construction.py
 from typing import Dict, List, Optional, Tuple
-
+from langchain.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from pandas.core.window.doc import template_returns
+from sklearn.mixture import GaussianMixture
+from my_util.util import PromptRunnable, llm, QianfanOpenAIEmbeddings
+from langsmith import traceable
+from langchain_community.vectorstores import Chroma
+from langchain_core.runnables import RunnablePassthrough
+from p12_14.raptor.data import get_documents
 import numpy as np
 import pandas as pd
 import umap
-from langchain.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from sklearn.mixture import GaussianMixture
+import pickle
+import os
+
+os.environ["LANGCHAIN_API_KEY"] = "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"
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+
 
 RANDOM_SEED = 224  # Fixed seed for reproducibility
 
@@ -231,97 +242,191 @@ def embed_cluster_texts(texts):
     df["cluster"] = cluster_labels  # Store cluster labels
     return df
 
-from p12_14.raptor.data import get_documents
-texts = get_documents()
-res = embed_cluster_texts(texts)
-print(res["text"].iloc[0])
-print(res["embd"].iloc[0])
-print(res["cluster"].iloc[0])
 
-# def fmt_txt(df: pd.DataFrame) -> str:
-#     """.**
-#     Formats the text documents in a DataFrame into a single string.
-#
-#     Parameters:
-#     - df: DataFrame containing the 'text' column with text documents to format.
-#
-#     Returns:
-#     - A single string where all text documents are joined by a specific delimiter.
-#     """
-#     unique_txt = df["text"].tolist()
-#     return "--- --- \n --- --- ".join(unique_txt)
-#
-#
-# def embed_cluster_summarize_texts(
-#         texts: List[str], level: int
-# ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-#     """
-#     Embeds, clusters, and summarizes a list of texts. This function first generates embeddings for the texts,
-#     clusters them based on similarity, expands the cluster assignments for easier processing, and then summarizes
-#     the content within each cluster.
-#
-#     Parameters:
-#     - texts: A list of text documents to be processed.
-#     - level: An integer parameter that could define the depth or detail of processing.
-#
-#     Returns:
-#     - Tuple containing two DataFrames:
-#       1. The first DataFrame (`df_clusters`) includes the original texts, their embeddings, and cluster assignments.
-#       2. The second DataFrame (`df_summary`) contains summaries for each cluster, the specified level of detail,
-#          and the cluster identifiers.
-#     """
-#
-#     # Embed and cluster the texts, resulting in a DataFrame with 'text', 'embd', and 'cluster' columns
-#     df_clusters = embed_cluster_texts(texts)
-#
-#     # Prepare to expand the DataFrame for easier manipulation of clusters
-#     expanded_list = []
-#
-#     # Expand DataFrame entries to document-cluster pairings for straightforward processing
-#     for index, row in df_clusters.iterrows():
-#         for cluster in row["cluster"]:
-#             expanded_list.append(
-#                 {"text": row["text"], "embd": row["embd"], "cluster": cluster}
-#             )
-#
-#     # Create a new DataFrame from the expanded list
-#     expanded_df = pd.DataFrame(expanded_list)
-#
-#     # Retrieve unique cluster identifiers for processing
-#     all_clusters = expanded_df["cluster"].unique()
-#
-#     print(f"--Generated {len(all_clusters)} clusters--")
-#
-#     # Summarization
-#     template = """Here is a sub-set of LangChain Expression Language doc.
-#
-#     LangChain Expression Language provides a way to compose chain in LangChain.
-#
-#     Give a detailed summary of the documentation provided.
-#
-#     Documentation:
-#     {context}
-#     """
-#     prompt = ChatPromptTemplate.from_template(template)
-#     chain = prompt | model | StrOutputParser()
-#
-#     # Format text within each cluster for summarization
-#     summaries = []
-#     for i in all_clusters:
-#         df_cluster = expanded_df[expanded_df["cluster"] == i]
-#         formatted_txt = fmt_txt(df_cluster)
-#         summaries.append(chain.invoke({"context": formatted_txt}))
-#
-#     # Create a DataFrame to store summaries with their corresponding cluster and level
-#     df_summary = pd.DataFrame(
-#         {
-#             "summaries": summaries,
-#             "level": [level] * len(summaries),
-#             "cluster": list(all_clusters),
-#         }
-#     )
-#
-#     return df_clusters, df_summary
+def fmt_txt(df: pd.DataFrame) -> str:
+    """.**
+    Formats the text documents in a DataFrame into a single string.
+
+    Parameters:
+    - df: DataFrame containing the 'text' column with text documents to format.
+
+    Returns:
+    - A single string where all text documents are joined by a specific delimiter.
+    """
+    unique_txt = df["text"].tolist()
+    return "--- --- \n --- --- ".join(unique_txt)
 
 
+def embed_cluster_summarize_texts(
+        texts: List[str], level: int
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Embeds, clusters, and summarizes a list of texts. This function first generates embeddings for the texts,
+    clusters them based on similarity, expands the cluster assignments for easier processing, and then summarizes
+    the content within each cluster.
 
+    Parameters:
+    - texts: A list of text documents to be processed.
+    - level: An integer parameter that could define the depth or detail of processing.
+
+    Returns:
+    - Tuple containing two DataFrames:
+      1. The first DataFrame (`df_clusters`) includes the original texts, their embeddings, and cluster assignments.
+      2. The second DataFrame (`df_summary`) contains summaries for each cluster, the specified level of detail,
+         and the cluster identifiers.
+    """
+
+    # Embed and cluster the texts, resulting in a DataFrame with 'text', 'embd', and 'cluster' columns
+    df_clusters = embed_cluster_texts(texts)
+
+    # Prepare to expand the DataFrame for easier manipulation of clusters
+    expanded_list = []
+
+    # Expand DataFrame entries to document-cluster pairings for straightforward processing
+    for index, row in df_clusters.iterrows():
+        for cluster in row["cluster"]:
+            expanded_list.append(
+                {"text": row["text"], "embd": row["embd"], "cluster": cluster}
+            )
+
+    # Create a new DataFrame from the expanded list
+    expanded_df = pd.DataFrame(expanded_list)
+
+    # Retrieve unique cluster identifiers for processing
+    all_clusters = expanded_df["cluster"].unique()
+
+    print(f"--Generated {len(all_clusters)} clusters--")
+
+    # Summarization
+    template = """
+    这是《成人高尿酸血症与痛风食养指南》文档的一部分内容，请你为这部分内容
+    写一个较为精简但是能涵盖其主要内容的摘要，摘要需要涉及到其中的主要内容
+    但是不需要写抽象的概括性的话，推荐的摘要字数为100-150
+    
+    文档内容是:
+    {context}
+    """
+    prompt = PromptRunnable(template)
+    chain = prompt | llm | StrOutputParser()
+
+    # Format text within each cluster for summarization
+    summaries = []
+    for i in all_clusters:
+        df_cluster = expanded_df[expanded_df["cluster"] == i]
+        formatted_txt = fmt_txt(df_cluster)
+        summaries.append(chain.invoke({"context": formatted_txt}))
+
+    # Create a DataFrame to store summaries with their corresponding cluster and level
+    df_summary = pd.DataFrame(
+        {
+            "summaries": summaries,
+            "level": [level] * len(summaries),
+            "cluster": list(all_clusters),
+        }
+    )
+
+    return df_clusters, df_summary
+
+
+@traceable()
+def recursive_embed_cluster_summarize(
+    texts: List[str], level: int = 1, n_levels: int = 3
+) -> Dict[int, Tuple[pd.DataFrame, pd.DataFrame]]:
+    """
+    Recursively embeds, clusters, and summarizes texts up to a specified level or until
+    the number of unique clusters becomes 1, storing the results at each level.
+
+    Parameters:
+    - texts: List[str], texts to be processed.
+    - level: int, current recursion level (starts at 1).
+    - n_levels: int, maximum depth of recursion.
+
+    Returns:
+    - Dict[int, Tuple[pd.DataFrame, pd.DataFrame]], a dictionary where keys are the recursion
+      levels and values are tuples containing the clusters DataFrame and summaries DataFrame at that level.
+    """
+    results = {}  # Dictionary to store results at each level
+
+    # Perform embedding, clustering, and summarization for the current level
+    df_clusters, df_summary = embed_cluster_summarize_texts(texts, level)
+
+    # Store the results of the current level
+    results[level] = (df_clusters, df_summary)
+
+    # Determine if further recursion is possible and meaningful
+    unique_clusters = df_summary["cluster"].nunique()
+    if level < n_levels and unique_clusters > 1:
+        # Use summaries as the input texts for the next level of recursion
+        new_texts = df_summary["summaries"].tolist()
+        next_level_results = recursive_embed_cluster_summarize(
+            new_texts, level + 1, n_levels
+        )
+
+        # Merge the results from the next level into the current results dictionary
+        results.update(next_level_results)
+
+    return results
+
+
+# texts = get_documents()
+# leaf_texts = texts
+# results = recursive_embed_cluster_summarize(leaf_texts, level=1, n_levels=3)
+# with open("cluster_results.pkl", "wb") as f:
+#     pickle.dump(results, f)
+
+with open("cluster_results.pkl", "rb") as f:
+    results = pickle.load(f)
+
+# Initialize all_texts with leaf_texts
+all_texts = get_documents()
+#
+# # Iterate through the results to extract summaries from each level and add them to all_texts
+for level in sorted(results.keys()):
+    # Extract summaries from the current level's DataFrame
+    summaries = results[level][1]["summaries"].tolist()
+    # Extend all_texts with the summaries from the current level
+    # print("========={0}=========".format(level))
+    # print(results[level][0])
+    # print(results[level][1])
+    all_texts.extend(summaries)
+
+# Now, use all_texts to build the vectorstore with Chroma
+vectorstore = Chroma(embedding_function=QianfanOpenAIEmbeddings())
+from langchain_core.documents import Document
+
+for i in range(0, len(all_texts), 10):
+    batch = all_texts[i: i+10]
+    batch_docs = [Document(page_content=text) for text in batch]
+    vectorstore.add_documents(documents=batch_docs)
+
+retriever = vectorstore.as_retriever()
+
+
+
+template = '''
+请你作为一个知识专家，根据提供的背景信息回答问题，背景信息是
+{context}
+问题是
+{question}
+'''
+prompt = PromptRunnable(template)
+
+
+# Post-processing
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+
+# Chain
+@traceable()
+def  run(question):
+    rag_chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+    return rag_chain.invoke(question)
+
+res = run("痛风病人和高尿酸血症的饮食需要注意一些什么？")
+print(res)
